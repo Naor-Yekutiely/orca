@@ -1,3 +1,4 @@
+import { reconcileTrackedPtyBindingGenerations } from '../terminal-bindings/pty-binding-generations'
 import type { PersistedState } from '../../../../shared/orca-profiles/persisted-state-types'
 import type {
   WorkspaceSessionPatch,
@@ -105,6 +106,12 @@ export class SessionSnapshotOperations {
   private publishSession(session: WorkspaceSessionState, hostId: ExecutionHostId): void {
     session = orderTerminalRowsByTabGroups(session)
     const { runtime, scheduling } = this[sessionSnapshotOperationsContext]
+    reconcileTrackedPtyBindingGenerations(
+      runtime,
+      hostId,
+      this[sessionSnapshotOperationsContext].sessions.getWorkspaceSession(hostId),
+      session
+    )
     if (hostId === LOCAL_EXECUTION_HOST_ID) {
       runtime.state.workspaceSession = session
     } else {

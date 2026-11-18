@@ -30,6 +30,11 @@ import { ClaudeSwitcherMenu } from './accounts/ClaudeSwitcherMenu'
 import { CodexSwitcherMenu } from './accounts/CodexSwitcherMenu'
 import { ProviderDetailsMenu } from './usage/ProviderDetailsMenu'
 import { AntigravityUsageMenu } from './usage/AntigravityUsageMenu'
+import {
+  CodexRestartBadge,
+  codexRestartBadgeLabel,
+  useCodexStaleSessionCount
+} from './accounts/CodexRestartBadge'
 import { CLOSE_ALL_CONTEXT_MENUS_EVENT } from '@/lib/overlay-interaction/close-all-context-menus'
 import { ProviderSegment, UsageOverflowChip, isUsageUrgent } from './usage/StatusBarProviderSegment'
 import {
@@ -74,6 +79,7 @@ export function StatusBarSurface({
   // Memoized labels still need to follow language changes.
   useTranslation()
   const controller = useStatusBarController(floatingTerminalOpen)
+  const codexStaleSessionCount = useCodexStaleSessionCount()
   if (!controller) {
     return null
   }
@@ -127,6 +133,7 @@ export function StatusBarSurface({
     usageMode,
     t
   )
+  const usageLabel = t('auto.components.status.bar.UsageRosterPanel.title', 'Usage')
 
   return (
     <div
@@ -167,7 +174,11 @@ export function StatusBarSurface({
                   <button
                     type="button"
                     className="inline-flex items-center gap-3 rounded px-1 py-0.5 hover:bg-accent/70"
-                    aria-label={t('auto.components.status.bar.UsageRosterPanel.title', 'Usage')}
+                    aria-label={
+                      codexStaleSessionCount > 0
+                        ? `${usageLabel}. ${codexRestartBadgeLabel(codexStaleSessionCount, t)}`
+                        : usageLabel
+                    }
                   >
                     {unitLabelState !== 'absent' ? (
                       <UsageUnitLabel
@@ -180,11 +191,13 @@ export function StatusBarSurface({
                       <span
                         key={p.provider}
                         data-usage-chip={p.provider}
-                        data-usage-urgent={isUsageUrgent(p)}
+                        data-usage-urgent={
+                          isUsageUrgent(p) || (p.provider === 'codex' && codexStaleSessionCount > 0)
+                        }
                         data-usage-percentage={usageChipShowsPercentage(p, usageMode, t)}
                         data-usage-collapsed={collapsedUsageProviders.includes(p.provider)}
                         aria-hidden={collapsedUsageProviders.includes(p.provider)}
-                        className="inline-flex data-[usage-collapsed=true]:invisible data-[usage-collapsed=true]:absolute"
+                        className="inline-flex items-center gap-1 data-[usage-collapsed=true]:invisible data-[usage-collapsed=true]:absolute"
                       >
                         <ProviderSegment
                           p={p}
@@ -192,6 +205,9 @@ export function StatusBarSurface({
                           display={usagePercentageDisplay}
                           mode={usageMode}
                         />
+                        {p.provider === 'codex' ? (
+                          <CodexRestartBadge count={codexStaleSessionCount} />
+                        ) : null}
                       </span>
                     ))}
                     {collapseUsage ? (
@@ -201,6 +217,9 @@ export function StatusBarSurface({
                           collapsedUsageProviders.includes(p.provider)
                         )}
                         display={usagePercentageDisplay}
+                        restartPending={
+                          codexStaleSessionCount > 0 && collapsedUsageProviders.includes('codex')
+                        }
                       />
                     ) : null}
                   </button>

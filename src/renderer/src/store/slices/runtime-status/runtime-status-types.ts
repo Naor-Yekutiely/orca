@@ -34,6 +34,8 @@ export type RuntimeStatusStoreState = RuntimeStatusSlice &
     Pick<
       AppState,
       | 'settings'
+      | 'pendingPaneAccountRestarts'
+      | 'codexRestartNoticeByPtyId'
       | 'remoteBrowserPageHandlesByPageId'
       | 'retainRuntimeDetectedAgents'
       | 'retainRuntimeTerminalQuickCommands'
