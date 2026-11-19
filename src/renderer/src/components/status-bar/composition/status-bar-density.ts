@@ -31,29 +31,38 @@ export type StatusBarLevelWidth = {
 const NO_COLLAPSED_USAGE: readonly string[] = []
 
 const WIDTH_TOLERANCE_PX = 1
+// Why: a level roomier than the current one must fit with margin, so a bar at the edge never flips back and forth.
+const ROOMIER_LEVEL_MARGIN_PX = 4
 
 /** Roomiest level known to fit; an unmeasured level is returned so it gets probed. */
 export function pickStatusBarDensityLevel(
   levelWidths: readonly (StatusBarLevelWidth | undefined)[],
-  availableWidth: number
+  availableWidth: number,
+  currentLevel: number
 ): number {
   const tightest = STATUS_BAR_DENSITY_LEVELS.length - 1
   for (let level = 0; level < tightest; level++) {
     const width = levelWidths[level]
-    if (width === undefined || width.fit <= availableWidth + WIDTH_TOLERANCE_PX) {
+    const slack = level < currentLevel ? -ROOMIER_LEVEL_MARGIN_PX : WIDTH_TOLERANCE_PX
+    if (width === undefined || width.fit <= availableWidth + slack) {
       return level
     }
   }
   return tightest
 }
 
-/** Natural-width changes invalidate all other levels; fit-only changes invalidate collapsing levels. */
+/**
+ * Natural-width changes invalidate all other levels; fit-only changes invalidate collapsing levels.
+ * Why `invalidate`: only a resize means the content changed; a width shift right after this hook's
+ * own level or collapse change must not restart probing, or the bar re-renders in a loop.
+ */
 export function recordStatusBarDensityWidth(
   levelWidths: readonly (StatusBarLevelWidth | undefined)[],
   level: number,
-  width: StatusBarLevelWidth
+  width: StatusBarLevelWidth,
+  invalidate = true
 ): (StatusBarLevelWidth | undefined)[] {
-  const previous = levelWidths[level]
+  const previous = invalidate ? levelWidths[level] : undefined
   const naturalChanged =
     previous !== undefined && Math.abs(previous.natural - width.natural) > WIDTH_TOLERANCE_PX
   // Why: urgency can change which chips pin without moving the natural width.
@@ -84,6 +93,8 @@ export function useStatusBarDensity(): {
   barRef: (node: HTMLElement | null) => void
   usageRef: (node: HTMLElement | null) => void
   segmentsRef: (node: HTMLElement | null) => void
+  /** Re-measure after content changes that resize no observed element (a collapsed chip turning urgent). */
+  remeasure: () => void
 } {
   const [level, setLevel] = useState(0)
   const [overflowing, setOverflowing] = useState(false)
@@ -97,7 +108,7 @@ export function useStatusBarDensity(): {
   const segmentsElementRef = useRef<HTMLElement | null>(null)
   const observerRef = useRef<ResizeObserver | null>(null)
 
-  const evaluate = useCallback((): void => {
+  const evaluate = useCallback((source: 'resize' | 'own-change'): void => {
     const bar = barElementRef.current
     if (!bar) {
       return
@@ -112,9 +123,14 @@ export function useStatusBarDensity(): {
     levelWidthsRef.current = recordStatusBarDensityWidth(
       levelWidthsRef.current,
       committedLevelRef.current,
-      { natural: required, fit: collapses ? usage.pinnedWidth + fixedWidth : required }
+      { natural: required, fit: collapses ? usage.pinnedWidth + fixedWidth : required },
+      source === 'resize'
     )
-    const nextLevel = pickStatusBarDensityLevel(levelWidthsRef.current, available)
+    const nextLevel = pickStatusBarDensityLevel(
+      levelWidthsRef.current,
+      available,
+      committedLevelRef.current
+    )
     if (nextLevel !== committedLevelRef.current) {
       setLevel(nextLevel)
     }
@@ -140,11 +156,12 @@ export function useStatusBarDensity(): {
     }
   }, [])
 
-  // Why: runs before paint, so probing a roomier level that turns out not to fit never flashes.
+  // Why: measure only what this hook changed (before paint, so a probe that doesn't fit never
+  // flashes); every other content or width change reaches evaluate through the ResizeObserver.
   useLayoutEffect(() => {
     committedLevelRef.current = level
-    evaluate()
-  })
+    evaluate('own-change')
+  }, [level, collapsedUsageProviders, evaluate])
 
   useEffect(() => () => observerRef.current?.disconnect(), [])
 
@@ -153,7 +170,7 @@ export function useStatusBarDensity(): {
       (target: ElementRef) =>
       (node: HTMLElement | null): void => {
         if (observerRef.current == null) {
-          observerRef.current = new ResizeObserver(() => evaluate())
+          observerRef.current = new ResizeObserver(() => evaluate('resize'))
         }
         if (target.current) {
           observerRef.current.unobserve(target.current)
@@ -170,7 +187,10 @@ export function useStatusBarDensity(): {
     }
   }, [evaluate])
 
+  const remeasure = useCallback(() => evaluate('resize'), [evaluate])
+
   return {
+    remeasure,
     density: STATUS_BAR_DENSITY_LEVELS[level],
     overflowing,
     collapsedUsageProviders,

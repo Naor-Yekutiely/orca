@@ -63,6 +63,20 @@ const SshStatusSegment = lazyWithRetry(() =>
   }))
 )
 
+/** The density hook observes sizes only; urgency or status flips inside collapsed chips resize nothing. */
+function DensityContentWatch({
+  contentKey,
+  remeasure
+}: {
+  contentKey: string
+  remeasure: () => void
+}): null {
+  React.useLayoutEffect(() => {
+    remeasure()
+  }, [contentKey, remeasure])
+  return null
+}
+
 export type StatusBarProps = {
   floatingTerminalOpen: boolean
 }
@@ -99,6 +113,7 @@ export function StatusBarSurface({
     overflowing,
     ownerUsage,
     petEnabled,
+    remeasure,
     remoteOwner,
     rosterProviders,
     segmentsIconOnly,
@@ -127,6 +142,12 @@ export function StatusBarSurface({
     usageMode,
     t
   )
+  const usageContentKey = rosterProviders
+    .map(
+      (p) =>
+        `${p.provider}:${p.status}:${isUsageUrgent(p)}:${usageChipShowsPercentage(p, usageMode, t)}`
+    )
+    .join('|')
 
   return (
     <div
@@ -146,6 +167,7 @@ export function StatusBarSurface({
         setMenuOpen(true)
       }}
     >
+      <DensityContentWatch contentKey={usageContentKey} remeasure={remeasure} />
       {/* Why: usage gives way first — what it drops stays one click away in its popover. */}
       <div
         className="status-bar-usage-cluster flex min-w-0 flex-1 items-center overflow-clip [overflow-clip-margin:3px]"
