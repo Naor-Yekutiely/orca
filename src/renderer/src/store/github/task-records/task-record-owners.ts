@@ -71,15 +71,16 @@ export abstract class TaskRecordOwners {
         this.bindings.delete(key)
       }
     }
-    this.reconcileRecords([...this.records.keys()])
+    this.reconcileRecords([...this.records.keys()], false)
   }
   /** A status write moves only its hosts' connection fences; bindings depend on repo rows alone. */
   syncRuntimeEnvironments(environmentIds: Iterable<string>) {
-    this.reconcileRecords(this.records.keysOn(environmentIds))
+    this.reconcileRecords(this.records.keysOn(environmentIds), true)
   }
-  private reconcileRecords(keys: readonly string[]) {
+  private reconcileRecords(keys: readonly string[], scoped: boolean) {
     let changed = false
     const reconnected = new Set<BindingIncarnation>()
+    const kept = new Map<string, AcceptedTask>()
     for (const key of keys) {
       const record = this.records.get(key)
       if (!record) {
@@ -88,7 +89,10 @@ export abstract class TaskRecordOwners {
       const observed = record.binding
       if (!this.keep(key, record)) {
         changed = true
-      } else if (record.binding !== observed) {
+        continue
+      }
+      kept.set(key, record)
+      if (record.binding !== observed) {
         reconnected.add(record.binding.incarnation)
       }
     }
@@ -96,8 +100,12 @@ export abstract class TaskRecordOwners {
       this.notify()
     }
     // A reconnect is a new chance for a read still owed on that binding.
+    // A binding's records share its host, so a scoped pass already holds every candidate.
+    const candidates = scoped
+      ? [...kept].flatMap(([key, record]) => (this.records.get(key) === record ? [record] : []))
+      : undefined
     for (const incarnation of reconnected) {
-      this.wake(incarnation)
+      this.wake(incarnation, candidates)
     }
   }
   capture(repo: Repo | undefined, source?: TaskSourceContext | null): TaskBinding | undefined {
@@ -279,5 +287,8 @@ export abstract class TaskRecordOwners {
     return record && this.current(record.binding) ? this.projectWith(row, record) : row
   }
   /** Gives one owed read on the binding its turn (an external delivery or reconnect). */
-  protected abstract wake(incarnation: BindingIncarnation): void
+  protected abstract wake(
+    incarnation: BindingIncarnation,
+    candidates?: Iterable<AcceptedTask>
+  ): void
 }

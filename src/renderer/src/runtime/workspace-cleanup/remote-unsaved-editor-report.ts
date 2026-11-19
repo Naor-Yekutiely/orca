@@ -55,6 +55,8 @@ export function installRemoteUnsavedEditorReport(): () => void {
   const stopWatches = new Map<string, () => void>()
   // One report in flight per host, so an older list can never land after a newer one.
   const inFlight = new Set<string>()
+  // Rebuilt only when editor or routing inputs change; host status never moves it.
+  let reports = unsavedWorktreeIdsByEnvironment(useAppStore.getState())
 
   const send = (environmentId: string, worktreeIds: string[]): void => {
     sent.set(environmentId, worktreeIds.join('\n'))
@@ -79,14 +81,13 @@ export function installRemoteUnsavedEditorReport(): () => void {
       .finally(() => {
         inFlight.delete(environmentId)
         // Edits made while it was in flight go out now, as the latest list only.
-        sync(useAppStore.getState())
+        syncHosts([environmentId])
       })
   }
 
-  const sync = (state: AppState): void => {
-    const current = unsavedWorktreeIdsByEnvironment(state)
-    for (const environmentId of new Set([...sent.keys(), ...current.keys()])) {
-      const worktreeIds = current.get(environmentId) ?? []
+  const syncHosts = (environmentIds: Iterable<string>): void => {
+    for (const environmentId of environmentIds) {
+      const worktreeIds = reports.get(environmentId) ?? []
       if (
         inFlight.has(environmentId) ||
         unsupported.has(environmentId) ||
@@ -98,6 +99,7 @@ export function installRemoteUnsavedEditorReport(): () => void {
       send(environmentId, worktreeIds)
     }
   }
+  const sync = (): void => syncHosts(new Set([...sent.keys(), ...reports.keys()]))
 
   const watch = (environmentId: string): void => {
     if (stopWatches.has(environmentId)) {
@@ -108,7 +110,7 @@ export function installRemoteUnsavedEditorReport(): () => void {
       // Unknown, not absent: an empty list must still go out to clear what the host holds.
       sent.set(environmentId, UNKNOWN)
       unsupported.delete(environmentId)
-      sync(useAppStore.getState())
+      syncHosts([environmentId])
     }
     // Desktop sees control-socket changes; web clients only see host contact come back.
     const stopSocket = onServerControlConnected(environmentId, resend)
@@ -121,13 +123,13 @@ export function installRemoteUnsavedEditorReport(): () => void {
 
   // A reloaded window must clear what its previous renderer reported over main's still-open socket.
   const known = new Set<string>()
-  /** True when a host got its first report owed. */
+  /** The hosts that just got their first report owed. */
   const noteEnvironments = (
     state: Pick<AppState, 'runtimeStatusByEnvironmentId' | 'runtimeEnvironments'>,
     environmentIds: Iterable<string> = state.runtimeStatusByEnvironmentId.keys()
-  ): boolean => {
+  ): string[] => {
     // Statuses can outlive a removed host; only configured hosts get a report.
-    let noted = false
+    const noted: string[] = []
     let configured: Set<string> | undefined
     for (const environmentId of environmentIds) {
       if (known.has(environmentId) || !state.runtimeStatusByEnvironmentId.has(environmentId)) {
@@ -137,19 +139,21 @@ export function installRemoteUnsavedEditorReport(): () => void {
       if (configured.has(environmentId)) {
         known.add(environmentId)
         sent.set(environmentId, UNKNOWN)
-        noted = true
+        noted.push(environmentId)
       }
     }
     return noted
   }
   noteEnvironments(useAppStore.getState())
-  sync(useAppStore.getState())
+  sync()
   // Routing reads no host status, so a status write only owes a first report to a newly seen host.
   const stopStatuses = runtimeStatusSubscriptionsFor(useAppStore).subscribeStatusChanges(
     (change) => {
-      const state = useAppStore.getState()
-      if (noteEnvironments(state, change ? change.ids : undefined) || !change) {
-        sync(state)
+      const noted = noteEnvironments(useAppStore.getState(), change ? change.ids : undefined)
+      if (change) {
+        syncHosts(noted)
+      } else {
+        sync()
       }
     }
   )
@@ -165,7 +169,8 @@ export function installRemoteUnsavedEditorReport(): () => void {
       state.repos !== previous.repos ||
       selectWorktreesByRepo(state) !== selectWorktreesByRepo(previous)
     ) {
-      sync(state)
+      reports = unsavedWorktreeIdsByEnvironment(state)
+      sync()
     }
   })
   return () => {

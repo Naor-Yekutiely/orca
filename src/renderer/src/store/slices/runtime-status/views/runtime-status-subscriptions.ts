@@ -64,8 +64,14 @@ export function createRuntimeStatusSubscriptions(store: RuntimeStatusStore) {
       const pending: Listener[] = []
       const queue = <T>(listeners: Set<T>, listener: T, run: () => void): void => {
         pending.push(() => {
-          if (listeners.has(listener)) {
+          if (!listeners.has(listener)) {
+            return
+          }
+          // Baselines already moved, so one failing observer must not cancel the rest of this write.
+          try {
             run()
+          } catch (error) {
+            console.error('Runtime status observer failed', error)
           }
         })
       }
