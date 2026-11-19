@@ -65,8 +65,9 @@ export function useStatusBarController(floatingTerminalOpen: boolean) {
     density: { compact, usageTightestOnly, segmentsIconOnly, collapseUsage },
     overflowing,
     collapsedUsageProviders,
-    // The bar's element refs and remeasure, passed through to the surface.
-    ...densityHandles
+    barRef,
+    usageRef,
+    segmentsRef
   } = useStatusBarDensity()
 
   useEffect(() => {
@@ -281,7 +282,7 @@ export function useStatusBarController(floatingTerminalOpen: boolean) {
     antigravityAccounts: rateLimits.antigravityAccounts,
     anyFetching,
     anyVisible,
-    ...densityHandles,
+    barRef,
     canSignInFromUsageRow,
     collapseUsage,
     collapsedUsageProviders,
@@ -306,6 +307,7 @@ export function useStatusBarController(floatingTerminalOpen: boolean) {
     remoteOwner,
     rosterProviders,
     segmentsIconOnly,
+    segmentsRef,
     setMenuOpen,
     setMenuPoint,
     setStatusBarUsageMode,
@@ -322,6 +324,7 @@ export function useStatusBarController(floatingTerminalOpen: boolean) {
     usageMenuFocusHandoff,
     usageMenuOpen,
     usagePercentageDisplay,
+    usageRef,
     usageTightestOnly
   }
 }

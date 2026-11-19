@@ -53,8 +53,9 @@ export function pickStatusBarDensityLevel(
 
 /**
  * Natural-width changes invalidate all other levels; fit-only changes invalidate collapsing levels.
- * Why `invalidate`: only a resize means the content changed; a width shift right after this hook's
- * own level or collapse change must not restart probing, or the bar re-renders in a loop.
+ * Why `invalidate`: only an observed resize or content mutation means the content changed; a width
+ * shift right after this hook's own level or collapse change must not restart probing, or the bar
+ * re-renders in a loop.
  */
 export function recordStatusBarDensityWidth(
   levelWidths: readonly (StatusBarLevelWidth | undefined)[],
@@ -93,8 +94,6 @@ export function useStatusBarDensity(): {
   barRef: (node: HTMLElement | null) => void
   usageRef: (node: HTMLElement | null) => void
   segmentsRef: (node: HTMLElement | null) => void
-  /** Re-measure after content changes that resize no observed element (a collapsed chip turning urgent). */
-  remeasure: () => void
 } {
   const [level, setLevel] = useState(0)
   const [overflowing, setOverflowing] = useState(false)
@@ -107,6 +106,8 @@ export function useStatusBarDensity(): {
   const usageElementRef = useRef<HTMLElement | null>(null)
   const segmentsElementRef = useRef<HTMLElement | null>(null)
   const observerRef = useRef<ResizeObserver | null>(null)
+  // Why: collapsed chips are absolutely positioned, so their text or urgency changes resize nothing observed.
+  const usageMutationsRef = useRef<MutationObserver | null>(null)
 
   const evaluate = useCallback((source: 'resize' | 'own-change'): void => {
     const bar = barElementRef.current
@@ -157,13 +158,19 @@ export function useStatusBarDensity(): {
   }, [])
 
   // Why: measure only what this hook changed (before paint, so a probe that doesn't fit never
-  // flashes); every other content or width change reaches evaluate through the ResizeObserver.
+  // flashes); other changes arrive through the observers below.
   useLayoutEffect(() => {
     committedLevelRef.current = level
     evaluate('own-change')
   }, [level, collapsedUsageProviders, evaluate])
 
-  useEffect(() => () => observerRef.current?.disconnect(), [])
+  useEffect(
+    () => () => {
+      observerRef.current?.disconnect()
+      usageMutationsRef.current?.disconnect()
+    },
+    []
+  )
 
   const refs = useMemo(() => {
     const bind =
@@ -180,17 +187,29 @@ export function useStatusBarDensity(): {
           observerRef.current.observe(node)
         }
       }
+    const bindUsage = bind(usageElementRef)
     return {
       barRef: bind(barElementRef),
-      usageRef: bind(usageElementRef),
+      usageRef: (node: HTMLElement | null): void => {
+        bindUsage(node)
+        if (usageMutationsRef.current == null) {
+          usageMutationsRef.current = new MutationObserver(() => evaluate('resize'))
+        }
+        usageMutationsRef.current.disconnect()
+        if (node) {
+          usageMutationsRef.current.observe(node, {
+            subtree: true,
+            childList: true,
+            characterData: true,
+            attributeFilter: ['data-usage-urgent']
+          })
+        }
+      },
       segmentsRef: bind(segmentsElementRef)
     }
   }, [evaluate])
 
-  const remeasure = useCallback(() => evaluate('resize'), [evaluate])
-
   return {
-    remeasure,
     density: STATUS_BAR_DENSITY_LEVELS[level],
     overflowing,
     collapsedUsageProviders,
