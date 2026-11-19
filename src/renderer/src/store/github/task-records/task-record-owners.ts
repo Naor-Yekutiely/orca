@@ -20,6 +20,7 @@ import {
   isHostIdentityFenceCurrent
 } from '../../../runtime/rpc/environment-revisions/host-identity-fence'
 import { applyTaskChange } from './task-change'
+import { TaskRecordsByEnvironment } from './task-records-by-environment'
 import {
   bindingKey,
   connection,
@@ -38,7 +39,7 @@ export abstract class TaskRecordOwners {
     string,
     { signature: string; incarnation: BindingIncarnation; id: number; unsupported?: string }
   >()
-  protected records = new Map<string, AcceptedTask>()
+  protected records = new TaskRecordsByEnvironment()
   protected listeners = new Set<() => void>()
   protected projections = new WeakMap<GitHubWorkItem, { stamp: object; value: GitHubWorkItem }>()
   protected revision = 0
@@ -70,9 +71,20 @@ export abstract class TaskRecordOwners {
         this.bindings.delete(key)
       }
     }
+    this.reconcileRecords([...this.records.keys()])
+  }
+  /** A status write moves only its hosts' connection fences; bindings depend on repo rows alone. */
+  syncRuntimeEnvironments(environmentIds: Iterable<string>) {
+    this.reconcileRecords(this.records.keysOn(environmentIds))
+  }
+  private reconcileRecords(keys: readonly string[]) {
     let changed = false
     const reconnected = new Set<BindingIncarnation>()
-    for (const [key, record] of this.records) {
+    for (const key of keys) {
+      const record = this.records.get(key)
+      if (!record) {
+        continue
+      }
       const observed = record.binding
       if (!this.keep(key, record)) {
         changed = true

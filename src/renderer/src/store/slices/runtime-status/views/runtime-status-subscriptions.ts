@@ -12,6 +12,13 @@ type RuntimeStatusStore = {
   subscribe: (listener: () => void) => () => void
 }
 type Listener = () => void
+/** null: a full resync or unannotated write, so any host may have changed. */
+export type RuntimeStatusChange = {
+  ids: ReadonlySet<string>
+  added: readonly string[]
+  deleted: ReadonlySet<string>
+} | null
+type ChangeListener = (change: RuntimeStatusChange) => void
 type ConnectionSubscription = {
   snapshot: RuntimeHostConnectionState
   listeners: Set<Listener>
@@ -22,9 +29,10 @@ export function createRuntimeStatusSubscriptions(store: RuntimeStatusStore) {
   const entryListeners = new Map<string, Set<Listener>>()
   const statusesListeners = new Set<Listener>()
   const parkingListeners = new Set<Listener>()
+  const changeListeners = new Set<ChangeListener>()
   let selectParking = createPairedRuntimeParkingEnvironmentIdsSelector()
   let parkingSnapshot: ReadonlySet<string> | null = null
-  let previousStatuses: RuntimeStatusState['runtimeStatusByEnvironmentId'] | null = null
+  let previousStatuses: RuntimeStatusState['runtimeStatusByEnvironmentId'] | undefined
   let unsubscribeStore: (() => void) | null = null
 
   function getConnectionSnapshot(environmentId: string | null): RuntimeHostConnectionState {
@@ -43,7 +51,9 @@ export function createRuntimeStatusSubscriptions(store: RuntimeStatusStore) {
     if (unsubscribeStore) {
       return
     }
-    previousStatuses = store.getState().runtimeStatusByEnvironmentId
+    // A slice may subscribe while the store is still being created, before it has state.
+    previousStatuses = (store.getState() as RuntimeStatusState | undefined)
+      ?.runtimeStatusByEnvironmentId
     unsubscribeStore = store.subscribe(() => {
       const statuses = store.getState().runtimeStatusByEnvironmentId
       const previous = previousStatuses
@@ -51,18 +61,32 @@ export function createRuntimeStatusSubscriptions(store: RuntimeStatusStore) {
         return
       }
       previousStatuses = statuses
-      const pending: { listeners: Set<Listener>; listener: Listener }[] = []
+      const pending: Listener[] = []
+      const queue = <T>(listeners: Set<T>, listener: T, run: () => void): void => {
+        pending.push(() => {
+          if (listeners.has(listener)) {
+            run()
+          }
+        })
+      }
       for (const listener of statusesListeners) {
-        pending.push({ listeners: statusesListeners, listener })
+        queue(statusesListeners, listener, listener)
       }
       // One host's verification attempt visits only that host; a full resync visits every subscriber.
       const changes = previous ? readRecordChanges(statuses, previous) : null
       const changedIds = changes?.kind === 'addressed' ? changes.keys : null
+      const change: RuntimeStatusChange =
+        changes?.kind === 'addressed'
+          ? { ids: changes.keys, added: changes.added, deleted: changes.deleted }
+          : null
+      for (const listener of changeListeners) {
+        queue(changeListeners, listener, () => listener(change))
+      }
       for (const environmentId of changedIds ?? entryListeners.keys()) {
         const listeners = entryListeners.get(environmentId)
         if (listeners && statuses.get(environmentId) !== previous?.get(environmentId)) {
           for (const listener of listeners) {
-            pending.push({ listeners, listener })
+            queue(listeners, listener, listener)
           }
         }
       }
@@ -77,7 +101,7 @@ export function createRuntimeStatusSubscriptions(store: RuntimeStatusStore) {
         }
         subscription.snapshot = snapshot
         for (const listener of subscription.listeners) {
-          pending.push({ listeners: subscription.listeners, listener })
+          queue(subscription.listeners, listener, listener)
         }
       }
       if (parkingListeners.size > 0) {
@@ -85,15 +109,13 @@ export function createRuntimeStatusSubscriptions(store: RuntimeStatusStore) {
         if (snapshot !== parkingSnapshot) {
           parkingSnapshot = snapshot
           for (const listener of parkingListeners) {
-            pending.push({ listeners: parkingListeners, listener })
+            queue(parkingListeners, listener, listener)
           }
         }
       }
       // Establish every comparison baseline before callbacks can commit nested writes.
-      for (const { listeners, listener } of pending) {
-        if (listeners.has(listener)) {
-          listener()
-        }
+      for (const run of pending) {
+        run()
       }
     })
   }
@@ -103,13 +125,14 @@ export function createRuntimeStatusSubscriptions(store: RuntimeStatusStore) {
       connections.size > 0 ||
       parkingListeners.size > 0 ||
       entryListeners.size > 0 ||
-      statusesListeners.size > 0
+      statusesListeners.size > 0 ||
+      changeListeners.size > 0
     ) {
       return
     }
     unsubscribeStore?.()
     unsubscribeStore = null
-    previousStatuses = null
+    previousStatuses = undefined
     parkingSnapshot = null
     selectParking = createPairedRuntimeParkingEnvironmentIdsSelector()
   }
@@ -192,12 +215,41 @@ export function createRuntimeStatusSubscriptions(store: RuntimeStatusStore) {
     }
   }
 
+  /** Names the hosts each status write touched, after every keyed view's baseline is set. */
+  function subscribeStatusChanges(listener: ChangeListener): () => void {
+    ensureSubscription()
+    const registered: ChangeListener = (change) => listener(change)
+    changeListeners.add(registered)
+    return () => {
+      changeListeners.delete(registered)
+      releaseIfUnused()
+    }
+  }
+
   return {
     getConnectionSnapshot,
     subscribeConnection,
     getParkingSnapshot,
     subscribeParking,
     subscribeEntry,
-    subscribeStatuses
+    subscribeStatuses,
+    subscribeStatusChanges
   }
+}
+
+const subscriptionsByStore = new WeakMap<
+  RuntimeStatusStore,
+  ReturnType<typeof createRuntimeStatusSubscriptions>
+>()
+
+/** The one host-status subscription owner for this store, shared by every view of it. */
+export function runtimeStatusSubscriptionsFor(
+  store: RuntimeStatusStore
+): ReturnType<typeof createRuntimeStatusSubscriptions> {
+  let subscriptions = subscriptionsByStore.get(store)
+  if (!subscriptions) {
+    subscriptions = createRuntimeStatusSubscriptions(store)
+    subscriptionsByStore.set(store, subscriptions)
+  }
+  return subscriptions
 }
