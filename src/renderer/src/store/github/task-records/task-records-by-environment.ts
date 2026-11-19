@@ -8,6 +8,8 @@ function runtimeEnvironmentOf(record: AcceptedTask): string | null {
 /** Task records, indexed by the paired runtime their fence routes through (nested SSH included). */
 export class TaskRecordsByEnvironment extends Map<string, AcceptedTask> {
   private keysByEnvironment = new Map<string, Set<string>>()
+  // Where each key was indexed, so a record rebound in place is removed from its old runtime.
+  private environmentByKey = new Map<string, string>()
 
   override set(key: string, record: AcceptedTask): this {
     this.unindex(key)
@@ -17,6 +19,7 @@ export class TaskRecordsByEnvironment extends Map<string, AcceptedTask> {
       const keys = this.keysByEnvironment.get(environmentId) ?? new Set<string>()
       keys.add(key)
       this.keysByEnvironment.set(environmentId, keys)
+      this.environmentByKey.set(key, environmentId)
     }
     return this
   }
@@ -28,6 +31,7 @@ export class TaskRecordsByEnvironment extends Map<string, AcceptedTask> {
 
   override clear(): void {
     this.keysByEnvironment.clear()
+    this.environmentByKey.clear()
     super.clear()
   }
 
@@ -35,13 +39,15 @@ export class TaskRecordsByEnvironment extends Map<string, AcceptedTask> {
     return [...environmentIds].flatMap((id) => [...(this.keysByEnvironment.get(id) ?? [])])
   }
 
-  // A rebind keeps the record's host id, so the runtime it was indexed under never moves.
   private unindex(key: string): void {
-    const record = this.get(key)
-    const environmentId = record && runtimeEnvironmentOf(record)
-    const keys = environmentId ? this.keysByEnvironment.get(environmentId) : undefined
+    const environmentId = this.environmentByKey.get(key)
+    if (environmentId === undefined) {
+      return
+    }
+    this.environmentByKey.delete(key)
+    const keys = this.keysByEnvironment.get(environmentId)
     keys?.delete(key)
-    if (environmentId && keys?.size === 0) {
+    if (keys?.size === 0) {
       this.keysByEnvironment.delete(environmentId)
     }
   }

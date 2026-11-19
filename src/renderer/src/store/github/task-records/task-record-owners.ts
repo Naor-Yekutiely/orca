@@ -146,6 +146,8 @@ export abstract class TaskRecordOwners {
     const observation = repo && captureGitHubTaskObservation(repo, source)
     if (observation) {
       record.binding = { observation, incarnation: record.binding.incarnation }
+      // A nested SSH host can move to another hub under the same id; the index follows its route.
+      this.records.set(key, record)
       if (this.current(record.binding)) {
         return true
       }

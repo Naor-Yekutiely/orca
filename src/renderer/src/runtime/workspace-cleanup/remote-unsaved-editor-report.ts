@@ -29,6 +29,28 @@ function unsavedWorktreeIdsByEnvironment(state: AppState): Map<string, string[]>
   return new Map([...byEnvironment].map(([environmentId, ids]) => [environmentId, [...ids].sort()]))
 }
 
+// Every field file-owner routing reads, plus the dirty-editor inputs themselves.
+const ROUTING_FIELDS = [
+  'openFiles',
+  'editorDrafts',
+  'repos',
+  'folderWorkspaces',
+  'projectGroups',
+  'detectedWorktreesByRepo',
+  'restoredRuntimeHostIdByWorkspaceSessionKey',
+  'activeWorktreeId',
+  'activeWorkspaceExecutionHostId',
+  'runtimeEnvironmentCatalogHydrated',
+  'removedRuntimeEnvironmentIds'
+] as const satisfies readonly (keyof AppState)[]
+
+function reportInputsChanged(state: AppState, previous: AppState): boolean {
+  return (
+    ROUTING_FIELDS.some((field) => state[field] !== previous[field]) ||
+    selectWorktreesByRepo(state) !== selectWorktreesByRepo(previous)
+  )
+}
+
 const UNKNOWN = '\0unknown'
 const REPORTER_ID_KEY = 'orca.workspaceCleanup.unsavedEditorReporterId'
 
@@ -55,8 +77,11 @@ export function installRemoteUnsavedEditorReport(): () => void {
   const stopWatches = new Map<string, () => void>()
   // One report in flight per host, so an older list can never land after a newer one.
   const inFlight = new Set<string>()
-  // Rebuilt only when editor or routing inputs change; host status never moves it.
+  // Rebuilt on editor or routing input changes, and fresh before every one-host send.
   let reports = unsavedWorktreeIdsByEnvironment(useAppStore.getState())
+  const refreshReports = (): void => {
+    reports = unsavedWorktreeIdsByEnvironment(useAppStore.getState())
+  }
 
   const send = (environmentId: string, worktreeIds: string[]): void => {
     sent.set(environmentId, worktreeIds.join('\n'))
@@ -81,6 +106,7 @@ export function installRemoteUnsavedEditorReport(): () => void {
       .finally(() => {
         inFlight.delete(environmentId)
         // Edits made while it was in flight go out now, as the latest list only.
+        refreshReports()
         syncHosts([environmentId])
       })
   }
@@ -110,6 +136,7 @@ export function installRemoteUnsavedEditorReport(): () => void {
       // Unknown, not absent: an empty list must still go out to clear what the host holds.
       sent.set(environmentId, UNKNOWN)
       unsupported.delete(environmentId)
+      refreshReports()
       syncHosts([environmentId])
     }
     // Desktop sees control-socket changes; web clients only see host contact come back.
@@ -150,6 +177,9 @@ export function installRemoteUnsavedEditorReport(): () => void {
   const stopStatuses = runtimeStatusSubscriptionsFor(useAppStore).subscribeStatusChanges(
     (change) => {
       const noted = noteEnvironments(useAppStore.getState(), change ? change.ids : undefined)
+      if (noted.length > 0 || !change) {
+        refreshReports()
+      }
       if (change) {
         syncHosts(noted)
       } else {
@@ -162,14 +192,8 @@ export function installRemoteUnsavedEditorReport(): () => void {
     if (environmentsChanged) {
       noteEnvironments(state)
     }
-    if (
-      environmentsChanged ||
-      state.openFiles !== previous.openFiles ||
-      state.editorDrafts !== previous.editorDrafts ||
-      state.repos !== previous.repos ||
-      selectWorktreesByRepo(state) !== selectWorktreesByRepo(previous)
-    ) {
-      reports = unsavedWorktreeIdsByEnvironment(state)
+    if (environmentsChanged || reportInputsChanged(state, previous)) {
+      refreshReports()
       sync()
     }
   })
